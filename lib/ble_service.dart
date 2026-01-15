@@ -1,83 +1,139 @@
-// lib/ble_service.dart
 import 'dart:async';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
+import 'package:permission_handler/permission_handler.dart';
 
-// Abstract class defines the "contract" for our service.
-abstract class BleService {
-  Stream<List<ScanResult>> get scanResults;
-  Stream<bool> get isScanning;
-  Stream<BluetoothConnectionState> get connectionState;
-  BluetoothDevice? get connectedDevice;
+/// BLE service wrapper (FlutterBluePlus)
+class BleService {
+  BleService._();
+  static final BleService I = BleService._();
 
-  Future<void> startScan();
-  Future<void> stopScan();
-  Future<void> connect(BluetoothDevice device);
-  void disconnect();
-  void sendControl(List<int> bytes);
-}
+  BluetoothDevice? connectedDevice;
 
-// The real implementation that uses flutter_blue_plus.
-class FlutterBlueBleService implements BleService {
-  BluetoothDevice? _connectedDevice;
-  BluetoothCharacteristic? _controlCharacteristic;
+  final StreamController<List<ScanResult>> _resultsCtrl =
+  StreamController<List<ScanResult>>.broadcast();
 
-  // TODO: Replace with your actual Service and Characteristic UUIDs
-  final Guid serviceUuid = Guid("0000ffe0-0000-1000-8000-00805f9b34fb");
-  final Guid characteristicUuid = Guid("0000ffe1-0000-1000-8000-00805f9b34fb");
+  final Map<DeviceIdentifier, ScanResult> _resultsMap = {};
 
-  @override
-  Stream<List<ScanResult>> get scanResults => FlutterBluePlus.scanResults;
+  StreamSubscription<List<ScanResult>>? _scanSub;
+  StreamSubscription<BluetoothAdapterState>? _adapterSub;
 
-  @override
+  Stream<List<ScanResult>> get scanResults => _resultsCtrl.stream;
   Stream<bool> get isScanning => FlutterBluePlus.isScanning;
 
-  @override
-  Future<void> startScan() async {
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 4));
-  }
+  BluetoothAdapterState get adapterState => FlutterBluePlus.adapterStateNow;
 
-  @override
-  Future<void> stopScan() async {
-    await FlutterBluePlus.stopScan();
-  }
-
-  @override
-  Future<void> connect(BluetoothDevice device) async {
-    await device.connect();
-    _connectedDevice = device;
-    await _discoverServices();
-  }
-
-  @override
-  void disconnect() {
-    _connectedDevice?.disconnect();
-    _connectedDevice = null;
-    _controlCharacteristic = null;
-  }
-
-  Future<void> _discoverServices() async {
-    if (_connectedDevice == null) return;
-    List<BluetoothService> services = await _connectedDevice!.discoverServices();
-    for (var service in services) {
-      if (service.uuid == serviceUuid) {
-        for (var characteristic in service.characteristics) {
-          if (characteristic.uuid == characteristicUuid) {
-            _controlCharacteristic = characteristic;
-          }
-        }
+  /// ✅ Call once at app start (optional but good)
+  Future<void> init() async {
+    _adapterSub ??= FlutterBluePlus.adapterState.listen((state) async {
+      if (state != BluetoothAdapterState.on) {
+        await stopScan();
       }
+    });
+  }
+
+  /// ✅ Android permissions (very important)
+  Future<void> ensurePermissions() async {
+    // NOTE: On Android 12+ (API 31+)
+    // Scan + connect permissions required.
+    // Location still needed by many devices during scan.
+
+    await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.locationWhenInUse,
+    ].request();
+  }
+
+  /// ✅ Start BLE Scan
+  Future<void> startScan({Duration timeout = const Duration(seconds: 12)}) async {
+    await ensurePermissions();
+
+    _resultsMap.clear();
+    _resultsCtrl.add([]);
+
+    // cancel old listener
+    await _scanSub?.cancel();
+    _scanSub = FlutterBluePlus.scanResults.listen((list) {
+      for (final r in list) {
+        _resultsMap[r.device.remoteId] = r;
+      }
+
+      final merged = _resultsMap.values.toList()
+        ..sort((a, b) => b.rssi.compareTo(a.rssi));
+
+      _resultsCtrl.add(merged);
+    });
+
+    // reset scan
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (_) {}
+
+    await FlutterBluePlus.startScan(
+      timeout: timeout,
+      androidUsesFineLocation: true,
+    );
+  }
+
+  /// ✅ Stop BLE scan
+  Future<void> stopScan() async {
+    try {
+      await FlutterBluePlus.stopScan();
+    } catch (_) {}
+
+    await _scanSub?.cancel();
+    _scanSub = null;
+  }
+
+  /// ✅ Connect to device reliably
+  Future<void> connect(BluetoothDevice device) async {
+    await stopScan();
+    await ensurePermissions();
+
+    // Disconnect previous device
+    if (connectedDevice != null) {
+      await disconnect();
     }
+
+    // Some devices throw if already connected
+    try {
+      await device.disconnect();
+    } catch (_) {}
+
+    // ✅ Connect
+    await device.connect(timeout: const Duration(seconds: 15));
+    connectedDevice = device;
+
+    // ✅ Drone-style stable communication improvements
+    try {
+      await device.requestMtu(247);
+    } catch (_) {}
+
+    try {
+      await device.discoverServices();
+    } catch (_) {}
   }
 
-  @override
-  void sendControl(List<int> bytes) {
-    _controlCharacteristic?.write(bytes, withoutResponse: true);
+  /// ✅ Disconnect
+  Future<void> disconnect() async {
+    if (connectedDevice == null) return;
+
+    try {
+      await connectedDevice!.disconnect();
+    } catch (_) {}
+
+    connectedDevice = null;
   }
 
-  @override
-  Stream<BluetoothConnectionState> get connectionState =>
-      _connectedDevice?.connectionState ?? Stream.value(BluetoothConnectionState.disconnected);
-      
-  @override
-  BluetoothDevice? get connectedDevice => _connectedDevice;
+  /// ✅ Connection state stream
+  Stream<BluetoothConnectionState> connectionState(BluetoothDevice device) {
+    return device.connectionState;
+  }
+
+  void dispose() {
+    stopScan();
+    _adapterSub?.cancel();
+    _adapterSub = null;
+    _resultsCtrl.close();
+  }
 }

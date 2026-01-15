@@ -9,9 +9,13 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_riverpod: ^2.5.1
-  flutter_blue_plus: ^1.31.14
+
+  flutter_bluetooth_serial: ^0.4.0
   permission_handler: ^11.3.1
+  flutter_riverpod: ^2.5.1
+  flutter_blue_plus: ^1.31.14 # Added missing dependency
+  shared_preferences: ^2.2.3
+
 
 dev_dependencies:
   flutter_test:

@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
-import 'package:permission_handler/permission_handler.dart';
+import 'package:joy_stickcontroller/ble_service.dart';
 
 class BluetoothPage extends StatefulWidget {
   const BluetoothPage({super.key});
@@ -11,247 +11,192 @@ class BluetoothPage extends StatefulWidget {
 }
 
 class _BluetoothPageState extends State<BluetoothPage> {
-  final Map<DeviceIdentifier, ScanResult> results = {};
-  StreamSubscription<List<ScanResult>>? _scanSub;
+  final BleService ble = BleService.I;
 
-  BluetoothDevice? connectedDevice;
+  StreamSubscription<List<ScanResult>>? _scanSub;
+  StreamSubscription<bool>? _scanStateSub;
+
+  List<ScanResult> results = [];
   bool scanning = false;
+  bool connecting = false;
 
   @override
   void initState() {
     super.initState();
-    _initBluetooth();
-  }
 
-  Future<void> _initBluetooth() async {
-    await [
-      Permission.location,
-      Permission.bluetoothScan,
-      Permission.bluetoothConnect,
-    ].request();
+    ble.init();
 
-    await FlutterBluePlus.turnOn();
-
-    FlutterBluePlus.adapterState.listen((s) {
-      if (mounted) setState(() {});
-    });
-  }
-
-  Future<void> startScan() async {
-    results.clear();
-    setState(() => scanning = true);
-
-    await FlutterBluePlus.startScan(
-      timeout: const Duration(seconds: 12),
-      androidUsesFineLocation: true,
-    );
-
-    _scanSub?.cancel();
-    _scanSub = FlutterBluePlus.scanResults.listen((list) {
-      for (final r in list) {
-        results[r.device.remoteId] = r;
-      }
-      if (mounted) setState(() {});
+    _scanSub = ble.scanResults.listen((list) {
+      setState(() => results = list);
     });
 
-    Future.delayed(const Duration(seconds: 12), () async {
-      await stopScan();
+    _scanStateSub = ble.isScanning.listen((v) {
+      setState(() => scanning = v);
     });
-  }
-
-  Future<void> stopScan() async {
-    await FlutterBluePlus.stopScan();
-    await _scanSub?.cancel();
-    _scanSub = null;
-    if (mounted) setState(() => scanning = false);
-  }
-
-  Future<void> connect(BluetoothDevice d) async {
-    try {
-      await stopScan();
-      if (connectedDevice != null) {
-        await connectedDevice!.disconnect();
-      }
-
-      await d.connect(timeout: const Duration(seconds: 15));
-      connectedDevice = d;
-
-      if (mounted) setState(() {});
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text("Connect failed: $e")),
-      );
-    }
-  }
-
-  Future<void> disconnect() async {
-    if (connectedDevice == null) return;
-    try {
-      await connectedDevice!.disconnect();
-      connectedDevice = null;
-      if (mounted) setState(() {});
-    } catch (_) {}
   }
 
   @override
   void dispose() {
-    stopScan();
+    _scanSub?.cancel();
+    _scanStateSub?.cancel();
     super.dispose();
+  }
+
+  Future<void> _scan() async {
+    try {
+      await ble.startScan(timeout: const Duration(seconds: 12));
+    } catch (e) {
+      _snack("Scan failed: $e");
+    }
+  }
+
+  Future<void> _connect(ScanResult r) async {
+    final deviceName =
+    r.device.platformName.isNotEmpty ? r.device.platformName : "Unknown Device";
+
+    setState(() => connecting = true);
+
+    try {
+      await ble.connect(r.device);
+      if (!mounted) return;
+
+      _snack("Connected: $deviceName");
+      Navigator.pop(context, ble.connectedDevice);
+    } catch (e) {
+      _snack("Connection failed: $e");
+    } finally {
+      if (mounted) setState(() => connecting = false);
+    }
+  }
+
+  void _snack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg)),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    final adapterState = FlutterBluePlus.adapterStateNow;
-
-    final list = results.values.toList()
-      ..sort((a, b) => b.rssi.compareTo(a.rssi));
-
     return Scaffold(
       backgroundColor: const Color(0xFF050505),
       appBar: AppBar(
-        backgroundColor: const Color(0xFF050505),
-        elevation: 0,
-        title: const Text("Bluetooth Devices"),
+        title: const Text("Bluetooth (BLE)"),
+        backgroundColor: const Color(0xFF0B0B0B),
         actions: [
-          IconButton(
-            icon: Icon(scanning ? Icons.stop : Icons.search),
-            onPressed: () => scanning ? stopScan() : startScan(),
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(14),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _statusTile(
-              title: "Adapter",
-              value: adapterState.toString().replaceAll("BluetoothAdapterState.", ""),
-            ),
-            const SizedBox(height: 10),
-
-            if (connectedDevice != null)
-              _connectedTile(connectedDevice!)
-            else
-              _statusTile(title: "Connected", value: "None"),
-
-            const SizedBox(height: 14),
-            Text(
-              "Nearby Devices (${list.length})",
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.9),
-                fontWeight: FontWeight.w800,
-                fontSize: 16,
-              ),
-            ),
-            const SizedBox(height: 10),
-
-            Expanded(
-              child: list.isEmpty
-                  ? Center(
-                child: Text(
-                  scanning ? "Scanning..." : "No devices found.\nTap search to scan.",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(color: Colors.white.withOpacity(0.55)),
+          if (scanning == true)
+            const Padding(
+              padding: EdgeInsets.only(right: 16),
+              child: Center(
+                child: SizedBox(
+                  height: 20,
+                  width: 20,
+                  child: CircularProgressIndicator(strokeWidth: 2),
                 ),
-              )
-                  : ListView.builder(
-                itemCount: list.length,
-                itemBuilder: (context, i) {
-                  final r = list[i];
-                  final d = r.device;
-
-                  final name = (r.advertisementData.advName.isNotEmpty)
-                      ? r.advertisementData.advName
-                      : (d.platformName.isNotEmpty ? d.platformName : "Unknown");
-
-                  return Container(
-                    margin: const EdgeInsets.only(bottom: 10),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.06),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(color: Colors.white.withOpacity(0.08)),
-                    ),
-                    child: ListTile(
-                      leading: const Icon(Icons.bluetooth, color: Color(0xFF35F6A3)),
-                      title: Text(
-                        name,
-                        style: TextStyle(
-                          color: Colors.white.withOpacity(0.88),
-                          fontWeight: FontWeight.w800,
-                        ),
-                      ),
-                      subtitle: Text(
-                        "${d.remoteId.str}\nRSSI: ${r.rssi}",
-                        style: TextStyle(color: Colors.white.withOpacity(0.5)),
-                      ),
-                      isThreeLine: true,
-                      trailing: ElevatedButton(
-                        onPressed: () => connect(d),
-                        child: const Text("Connect"),
-                      ),
-                    ),
-                  );
-                },
               ),
             ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _statusTile({required String title, required String value}) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white.withOpacity(0.06),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.white.withOpacity(0.08)),
-      ),
-      child: Row(
-        children: [
-          Text(
-            title,
-            style: TextStyle(
-              color: Colors.white.withOpacity(0.85),
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const Spacer(),
-          Text(value, style: TextStyle(color: Colors.white.withOpacity(0.55))),
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: scanning ? null : _scan,
+          )
         ],
       ),
-    );
-  }
-
-  Widget _connectedTile(BluetoothDevice d) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: const Color(0xFF35F6A3).withOpacity(0.12),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFF35F6A3).withOpacity(0.25)),
-      ),
-      child: Row(
+      body: Column(
         children: [
-          const Icon(Icons.check_circle, color: Color(0xFF35F6A3)),
-          const SizedBox(width: 10),
+          const SizedBox(height: 10),
+
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.05),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: Colors.white.withOpacity(0.08)),
+            ),
+            child: Row(
+              children: [
+                Icon(Icons.bluetooth, color: Colors.white.withOpacity(0.7)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    connecting
+                        ? "Connecting..."
+                        : scanning
+                        ? "Scanning nearby devices..."
+                        : "Tap Scan to find devices",
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.7),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                if (ble.connectedDevice != null)
+                  Text(
+                    "CONNECTED",
+                    style: TextStyle(
+                      color: Colors.greenAccent.withOpacity(0.9),
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+
+          const SizedBox(height: 10),
+
           Expanded(
-            child: Text(
-              "Connected: ${d.platformName.isNotEmpty ? d.platformName : d.remoteId.str}",
-              style: TextStyle(
-                color: Colors.white.withOpacity(0.9),
-                fontWeight: FontWeight.w800,
+            child: results.isEmpty
+                ? Center(
+              child: Text(
+                "No devices found.\nPress Scan.",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white.withOpacity(0.4),
+                  fontWeight: FontWeight.w600,
+                ),
               ),
+            )
+                : ListView.builder(
+              itemCount: results.length,
+              itemBuilder: (context, i) {
+                final r = results[i];
+                final name = r.device.platformName.isNotEmpty
+                    ? r.device.platformName
+                    : "Unknown Device";
+
+                return ListTile(
+                  leading: const Icon(Icons.bluetooth),
+                  iconColor: Colors.white.withOpacity(0.7),
+                  title: Text(
+                    name,
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.85),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  subtitle: Text(
+                    r.device.remoteId.toString(),
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.4),
+                    ),
+                  ),
+                  trailing: Text(
+                    "${r.rssi} dBm",
+                    style: TextStyle(
+                      color: Colors.white.withOpacity(0.55),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  onTap: connecting ? null : () => _connect(r),
+                );
+              },
             ),
           ),
-          TextButton(
-            onPressed: disconnect,
-            child: const Text("Disconnect"),
-          ),
         ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: scanning || connecting ? null : _scan,
+        child: const Icon(Icons.search),
       ),
     );
   }
