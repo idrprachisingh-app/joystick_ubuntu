@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -63,12 +62,6 @@ class HudItem {
       HudItem(id: id, posPct: posPct ?? this.posPct, scale: scale ?? this.scale);
 }
 
-class RcOutput {
-  final int throttle, yaw, pitch, roll;
-  const RcOutput(this.throttle, this.yaw, this.pitch, this.roll);
-  String toCsv() => "$throttle,$yaw,$pitch,$roll\n";
-}
-
 /* ============================================================
     MAIN UI
    ============================================================ */
@@ -87,7 +80,11 @@ class _ControllerUIState extends State<ControllerUI> {
   // Controller Inputs
   Offset leftJoy = Offset.zero;
   Offset rightJoy = Offset.zero;
-  double sw1 = 0.5, sw2 = 0.5, sw3 = 0.5, sw4 = 0.5;
+
+  // 2-Option Switches (0 or 1)
+  int sw1 = 0, sw2 = 0;
+  // 3-Option Switches (0, 1, or 2)
+  int sw3 = 0, sw4 = 0;
 
   late Map<String, HudItem> hud;
   Timer? _txTimer;
@@ -98,7 +95,7 @@ class _ControllerUIState extends State<ControllerUI> {
     _resetHud();
     _txTimer = Timer.periodic(const Duration(milliseconds: 50), (timer) {
       if (powerOn && BleManager().isReady) {
-        BleManager().sendRcCsv(_computeRc().toCsv());
+        BleManager().sendRcCsv(_getFormattedData());
       }
     });
   }
@@ -115,21 +112,22 @@ class _ControllerUIState extends State<ControllerUI> {
         "bt": const HudItem(id: "bt", posPct: Offset(0.04, 0.05)),
         "power": const HudItem(id: "power", posPct: Offset(0.47, 0.02)),
         "topRight": const HudItem(id: "topRight", posPct: Offset(0.85, 0.05)),
-        "swLeft": const HudItem(id: "swLeft", posPct: Offset(0.18, 0.22)),
-        "swRight": const HudItem(id: "swRight", posPct: Offset(0.72, 0.22)),
+        "swLeft": const HudItem(id: "swLeft", posPct: Offset(0.18, 0.15)),
+        "swRight": const HudItem(id: "swRight", posPct: Offset(0.72, 0.15)),
         "joyLeft": const HudItem(id: "joyLeft", posPct: Offset(0.16, 0.48)),
         "joyRight": const HudItem(id: "joyRight", posPct: Offset(0.70, 0.48)),
-        "dpadLeft": const HudItem(id: "dpadLeft", posPct: Offset(0.06, 0.72), scale: 0.8),
-        "dpadRight": const HudItem(id: "dpadRight", posPct: Offset(0.88, 0.72), scale: 0.8),
+        "dpadLeft": const HudItem(id: "dpadLeft", posPct: Offset(0.06, 0.72)),
+        "dpadRight": const HudItem(id: "dpadRight", posPct: Offset(0.88, 0.72)),
         "ab": const HudItem(id: "ab", posPct: Offset(0.43, 0.72)),
-        "debug": const HudItem(id: "debug", posPct: Offset(0.02, 0.88)),
+        "debug": const HudItem(id: "debug", posPct: Offset(0.02, 0.82)),
       };
     });
   }
 
-  RcOutput _computeRc() {
+  String _getFormattedData() {
     int map(double v) => (1500 + (v.clamp(-1.0, 1.0) * 500)).round();
-    return RcOutput(map(-leftJoy.dy), map(leftJoy.dx), map(-rightJoy.dy), map(rightJoy.dx));
+    // Format: THR,YAW,PIT,ROL,SW1,SW2,SW3,SW4
+    return "${map(-leftJoy.dy)},${map(leftJoy.dx)},${map(-rightJoy.dy)},${map(rightJoy.dx)},$sw1,$sw2,$sw3,$sw4\n";
   }
 
   void _openSettings() {
@@ -142,16 +140,16 @@ class _ControllerUIState extends State<ControllerUI> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Text("HUD EDIT SETTINGS", style: TextStyle(fontWeight: FontWeight.bold)),
+              const Text("HUD EDIT SETTINGS"),
               SwitchListTile(
-                title: const Text("HUD Edit Mode"),
+                title: const Text("Edit Mode"),
                 value: hudEditMode,
                 onChanged: (v) { setState(() => hudEditMode = v); setMState(() {}); },
               ),
               if (hudEditMode) ...[
-                CheckboxListTile(title: const Text("Enable Move"), value: hudMoveEnabled, onChanged: (v) => setState(() => hudMoveEnabled = v!)),
-                CheckboxListTile(title: const Text("Enable Scale"), value: hudResizeEnabled, onChanged: (v) => setState(() => hudResizeEnabled = v!)),
-                ElevatedButton(onPressed: _resetHud, child: const Text("Reset to Default Layout")),
+                CheckboxListTile(title: const Text("Move"), value: hudMoveEnabled, onChanged: (v) => setState(() => hudMoveEnabled = v!)),
+                CheckboxListTile(title: const Text("Scale"), value: hudResizeEnabled, onChanged: (v) => setState(() => hudResizeEnabled = v!)),
+                ElevatedButton(onPressed: _resetHud, child: const Text("Reset Layout")),
               ],
             ],
           ),
@@ -185,7 +183,7 @@ class _ControllerUIState extends State<ControllerUI> {
             onChanged: (ni) => setState(() => hud["power"] = ni),
             child: _PowerBtn(isOn: powerOn, onTap: () => setState(() => powerOn = !powerOn)),
           ),
-          // Link & Settings Icons
+          // Link & Settings
           HudWrapper(
             item: hud["topRight"]!, containerW: w, containerH: h, editMode: hudEditMode,
             move: hudMoveEnabled, scale: hudResizeEnabled,
@@ -196,26 +194,26 @@ class _ControllerUIState extends State<ControllerUI> {
               IconButton(icon: const Icon(Icons.settings, color: Colors.white54, size: 30), onPressed: _openSettings),
             ]),
           ),
-          // Sliders SW1-SW2
+          // 2-Position Switches (SW1, SW2)
           HudWrapper(
             item: hud["swLeft"]!, containerW: w, containerH: h, editMode: hudEditMode,
             move: hudMoveEnabled, scale: hudResizeEnabled,
             onChanged: (ni) => setState(() => hud["swLeft"] = ni),
             child: Row(children: [
-              _VerticalSlider(label: "SW1", value: sw1, onChanged: (v) => setState(() => sw1 = v), enabled: powerOn),
-              const SizedBox(width: 12),
-              _VerticalSlider(label: "SW2", value: sw2, onChanged: (v) => setState(() => sw2 = v), enabled: powerOn),
+              _MultiSwitch(label: "SW1", options: 2, current: sw1, onToggle: (v) => setState(() => sw1 = v), enabled: powerOn),
+              const SizedBox(width: 15),
+              _MultiSwitch(label: "SW2", options: 2, current: sw2, onToggle: (v) => setState(() => sw2 = v), enabled: powerOn),
             ]),
           ),
-          // Sliders SW3-SW4
+          // 3-Position Switches (SW3, SW4)
           HudWrapper(
             item: hud["swRight"]!, containerW: w, containerH: h, editMode: hudEditMode,
             move: hudMoveEnabled, scale: hudResizeEnabled,
             onChanged: (ni) => setState(() => hud["swRight"] = ni),
             child: Row(children: [
-              _VerticalSlider(label: "SW3", value: sw3, onChanged: (v) => setState(() => sw3 = v), enabled: powerOn),
-              const SizedBox(width: 12),
-              _VerticalSlider(label: "SW4", value: sw4, onChanged: (v) => setState(() => sw4 = v), enabled: powerOn),
+              _MultiSwitch(label: "SW3", options: 3, current: sw3, onToggle: (v) => setState(() => sw3 = v), enabled: powerOn),
+              const SizedBox(width: 15),
+              _MultiSwitch(label: "SW4", options: 3, current: sw4, onToggle: (v) => setState(() => sw4 = v), enabled: powerOn),
             ]),
           ),
           // Joysticks
@@ -244,7 +242,7 @@ class _ControllerUIState extends State<ControllerUI> {
             onChanged: (ni) => setState(() => hud["dpadRight"] = ni),
             child: const _DPad(),
           ),
-          // A-B Buttons
+          // AB Buttons
           HudWrapper(
             item: hud["ab"]!, containerW: w, containerH: h, editMode: hudEditMode,
             move: hudMoveEnabled, scale: hudResizeEnabled,
@@ -254,6 +252,13 @@ class _ControllerUIState extends State<ControllerUI> {
               const SizedBox(width: 25),
               _RoundBtn(label: "B", enabled: powerOn),
             ]),
+          ),
+          // LIVE MONITORING PANEL
+          HudWrapper(
+            item: hud["debug"]!, containerW: w, containerH: h, editMode: hudEditMode,
+            move: hudMoveEnabled, scale: hudResizeEnabled,
+            onChanged: (ni) => setState(() => hud["debug"] = ni),
+            child: _LiveMonitor(data: _getFormattedData()),
           ),
         ],
       ),
@@ -282,14 +287,14 @@ class HudWrapper extends StatelessWidget {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onPanUpdate: editMode && move ? (d) {
-          double nx = (item.posPct.dx + d.delta.dx / containerW).clamp(0.0, 0.9);
-          double ny = (item.posPct.dy + d.delta.dy / containerH).clamp(0.0, 0.9);
+          double nx = (item.posPct.dx + d.delta.dx / containerW).clamp(0.0, 0.95);
+          double ny = (item.posPct.dy + d.delta.dy / containerH).clamp(0.0, 0.95);
           onChanged(item.copyWith(posPct: Offset(nx, ny)));
         } : null,
         child: Transform.scale(
           scale: item.scale,
           child: Container(
-            decoration: BoxDecoration(border: editMode ? Border.all(color: Colors.greenAccent) : null),
+            decoration: BoxDecoration(border: editMode ? Border.all(color: Colors.cyanAccent) : null),
             child: IgnorePointer(ignoring: editMode, child: child),
           ),
         ),
@@ -333,25 +338,44 @@ class _JoystickState extends State<_Joystick> {
   }
 }
 
-class _VerticalSlider extends StatelessWidget {
+class _MultiSwitch extends StatelessWidget {
   final String label;
-  final double value;
-  final ValueChanged<double> onChanged;
+  final int options; // 2 or 3
+  final int current;
+  final ValueChanged<int> onToggle;
   final bool enabled;
-  const _VerticalSlider({required this.label, required this.value, required this.onChanged, required this.enabled});
+
+  const _MultiSwitch({required this.label, required this.options, required this.current, required this.onToggle, required this.enabled});
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
         Text(label, style: const TextStyle(fontSize: 10, color: Colors.white38)),
-        const SizedBox(height: 4),
-        Container(
-          width: 40, height: 80,
-          decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.white24)),
-          child: RotatedBox(
-            quarterTurns: 3,
-            child: Slider(value: value, onChanged: enabled ? onChanged : null, activeColor: Colors.white54, inactiveColor: Colors.black26),
+        const SizedBox(height: 5),
+        GestureDetector(
+          onTap: enabled ? () => onToggle((current + 1) % options) : null,
+          child: Container(
+            width: 45, height: 90,
+            decoration: BoxDecoration(color: Colors.white10, borderRadius: BorderRadius.circular(10), border: Border.all(color: Colors.white24)),
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                // Track visual
+                Container(width: 4, height: 60, color: Colors.white24),
+                // Toggle Handle
+                AnimatedPositioned(
+                  duration: const Duration(milliseconds: 150),
+                  bottom: options == 2
+                      ? (current == 0 ? 10 : 50)
+                      : (current == 0 ? 10 : current == 1 ? 30 : 50),
+                  child: Container(
+                    width: 30, height: 30,
+                    decoration: BoxDecoration(color: Colors.grey[700], borderRadius: BorderRadius.circular(5), border: Border.all(color: Colors.white54)),
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -364,15 +388,15 @@ class _DPad extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget arrow(IconData icon) => Container(
-      padding: const EdgeInsets.all(4),
+      padding: const EdgeInsets.all(5),
       decoration: const BoxDecoration(shape: BoxShape.circle, color: Colors.white10),
-      child: Icon(icon, color: Colors.white38, size: 20),
+      child: Icon(icon, color: Colors.white38, size: 25),
     );
     return Column(
       children: [
-        arrow(Icons.arrow_drop_up),
-        Row(children: [arrow(Icons.arrow_left), const SizedBox(width: 15), arrow(Icons.arrow_right)]),
-        arrow(Icons.arrow_drop_down),
+        arrow(Icons.keyboard_arrow_up),
+        Row(children: [arrow(Icons.keyboard_arrow_left), const SizedBox(width: 15), arrow(Icons.keyboard_arrow_right)]),
+        arrow(Icons.keyboard_arrow_down),
       ],
     );
   }
@@ -419,6 +443,26 @@ class _ActionChip extends StatelessWidget {
   }
 }
 
+class _LiveMonitor extends StatelessWidget {
+  final String data;
+  const _LiveMonitor({required this.data});
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(10),
+      color: Colors.black87,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text("LIVE TELEMETRY", style: TextStyle(fontSize: 9, fontWeight: FontWeight.bold, color: Colors.cyanAccent)),
+          const SizedBox(height: 5),
+          Text(data.trim(), style: const TextStyle(fontSize: 12, fontFamily: 'monospace', color: Colors.white70)),
+        ],
+      ),
+    );
+  }
+}
+
 /* ============================================================
     BLUETOOTH PAGE (Standard Connect)
    ============================================================ */
@@ -447,7 +491,7 @@ class _BluetoothPageState extends State<BluetoothPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text("BLE Scan")),
+      appBar: AppBar(title: const Text("Select BLE Device")),
       body: ListView.builder(
         itemCount: results.length,
         itemBuilder: (c, i) => ListTile(
@@ -458,7 +502,7 @@ class _BluetoothPageState extends State<BluetoothPage> {
             var services = await results[i].device.discoverServices();
             for (var s in services) {
               for (var char in s.characteristics) {
-                if (char.properties.write) {
+                if (char.properties.write || char.properties.writeWithoutResponse) {
                   BleManager().connectedDevice = results[i].device;
                   BleManager().writeChar = char;
                   Navigator.pop(context);
